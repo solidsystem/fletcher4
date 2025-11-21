@@ -33,10 +33,16 @@ const Size = 32
 const BlockSize = 4
 
 // digest represents the partial evaluation of a fletcher4 checksum.
-type digest [4]uint64
+type digest struct {
+	sum  [4]uint64
+	buf  [BlockSize]byte
+	nbuf int
+}
 
 func (d *digest) Reset() {
-	*d = [4]uint64{0, 0, 0, 0}
+	d.sum = [4]uint64{0, 0, 0, 0}
+	d.buf = [BlockSize]byte{}
+	d.nbuf = 0
 }
 
 // New returns a new Fletcher64x4 (hash.Hash) computing the fletcher4 checksum.
@@ -52,53 +58,50 @@ func (d *digest) BlockSize() int {
 	return BlockSize
 }
 
-// Add p to the running checksum d.
-func update(dig digest, p []byte) digest {
-	a := dig[0]
-	b := dig[1]
-	c := dig[2]
-	d := dig[3]
-
-	// Incase input is not padded to 4 bytes
+func (d *digest) update(p []byte) {
 	if len(p)%BlockSize != 0 {
-		panic(fmt.Sprintf("Write to Fletcher64x4 checksummer must be a multiple of %v bytes.", BlockSize))
+		panic(fmt.Sprintf("update to Fletcher64x4 checksummer digest must be a multiple of %v bytes.", BlockSize))
 	}
-
-	/*  This fix was deactivated, not sure this would be correct to do, if repeated writes to the checksummer are done with too few
-		bytes the checksum would probably be wrong at the end. All writes must be a multiple of BlockSize, else we panic
-	var p []byte
-	if remainder := len(p) % BlockSize; remainder != 0 {
-		p = make([]byte, len(p)+remainder)
-		copy(p, add)
-	} else {
-		p = add
-	}
-	*/
-
 	for i := 0; i < len(p); i += BlockSize {
-		a += uint64(binary.LittleEndian.Uint32(p[i : i+BlockSize]))
-		b += a
-		c += b
-		d += c
+		d.sum[0] += uint64(binary.LittleEndian.Uint32(p[i : i+BlockSize]))
+		d.sum[1] += d.sum[0]
+		d.sum[2] += d.sum[1]
+		d.sum[3] += d.sum[2]
 	}
-
-	return digest{a, b, c, d}
 }
 
 func (d *digest) Write(p []byte) (n int, err error) {
-	*d = update(*d, p)
-	return len(p), nil
+	n = len(p)
+	if d.nbuf > 0 {
+		copied := copy(d.buf[d.nbuf:], p)
+		d.nbuf += copied
+		p = p[copied:]
+		if d.nbuf == BlockSize {
+			d.update(d.buf[:])
+			d.nbuf = 0
+		}
+	}
+	if len(p) >= BlockSize {
+		alignedLen := len(p) &^ (BlockSize - 1)
+		d.update(p[:alignedLen])
+		p = p[alignedLen:]
+	}
+	if len(p) > 0 {
+		d.nbuf = copy(d.buf[:], p)
+	}
+	return n, nil
 }
 
 func (d *digest) Sum(in []byte) []byte {
+	s := d.Sum64x4()
 	add := make([]byte, 8)
-	binary.LittleEndian.PutUint64(add, d[0])
+	binary.LittleEndian.PutUint64(add, s[0])
 	ret := append(in, add...)
-	binary.LittleEndian.PutUint64(add, d[1])
+	binary.LittleEndian.PutUint64(add, s[1])
 	ret = append(ret, add...)
-	binary.LittleEndian.PutUint64(add, d[2])
+	binary.LittleEndian.PutUint64(add, s[2])
 	ret = append(ret, add...)
-	binary.LittleEndian.PutUint64(add, d[3])
+	binary.LittleEndian.PutUint64(add, s[3])
 	ret = append(ret, add...)
 
 	return ret
@@ -106,5 +109,16 @@ func (d *digest) Sum(in []byte) []byte {
 
 // Returns the current checksum
 func (d *digest) Sum64x4() [4]uint64 {
-	return [4]uint64(*d)
+	sum := d.sum
+	if d.nbuf > 0 {
+		var buf [BlockSize]byte
+		copy(buf[:], d.buf[:d.nbuf])
+		// Pad with zeros (implicit since buf is zero-initialized)
+		val := uint64(binary.LittleEndian.Uint32(buf[:]))
+		sum[0] += val
+		sum[1] += sum[0]
+		sum[2] += sum[1]
+		sum[3] += sum[2]
+	}
+	return sum
 }

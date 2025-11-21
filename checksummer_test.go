@@ -79,3 +79,81 @@ func TestChecksummer2(t *testing.T) {
 		t.Errorf("Checksum Sum method call 2 returned wrong result.\nExpected %x,\ngot: %x)", sum, expSum2)
 	}
 }
+
+func TestUnalignedWrite(t *testing.T) {
+	h := New()
+	// "hello" = "hell" (0x6c6c6568) + "o" (0x6f)
+	// Block 1: 0x6c6c6568
+	// Block 2 (padded): 0x0000006f
+	//
+	// sum[0] = 0x6c6c6568 + 0x6f = 0x6c6c65d7
+	// sum[1] = 0x6c6c6568 + 0x6c6c65d7 = 0xd8d8cb3f
+	// sum[2] = 0x6c6c6568 + 0xd8d8cb3f = 0x1454530a7
+	// sum[3] = 0x6c6c6568 + 0x1454530a7 = 0x1b1b1960f
+
+	_, err := h.Write([]byte("hello"))
+	if err != nil {
+		t.Errorf("Write failed: %v", err)
+	}
+
+	exp := hexRes{"6c6c65d7", "d8d8cb3f", "1454530a7", "1b1b1960f"}
+	res := h.Sum64x4()
+	compare(t, "Unaligned write test", exp, res)
+}
+
+func TestReset(t *testing.T) {
+	h := New()
+	h.Write([]byte("123"))
+	h.Reset()
+	h.Write([]byte("4"))
+
+	// "4" (0x34) padded to 4 bytes: 0x34, 0x00, 0x00, 0x00
+	// uint32 value: 0x00000034 = 52
+	// sum[0] = 52, sum[1] = 52, sum[2] = 52, sum[3] = 52
+	exp := hexRes{"34", "34", "34", "34"}
+	res := h.Sum64x4()
+	compare(t, "Reset test", exp, res)
+}
+
+func TestUnalignedWrite2(t *testing.T) {
+	inp1 := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	exp1 := hexRes{"c0a0806", "100d0a07", "14100c08", "18130e09"}
+
+	checksummer := New()
+	if _, err := checksummer.Write(inp1[:1]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checksummer.Write(inp1[1:3]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checksummer.Write(inp1[3:]); err != nil {
+		t.Fatal(err)
+	}
+
+	res1 := checksummer.Sum64x4()
+	compare(t, "Unaligned write test 2, 8 bytes written failed", exp1, res1)
+
+	inp2 := []byte{2, 4, 6, 8}
+	exp2 := hexRes{"14100c08", "241d160f", "382d2217", "50403020"}
+	if _, err := checksummer.Write(inp2[:2]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checksummer.Write(inp2[2:]); err != nil {
+		t.Fatal(err)
+	}
+	res2 := checksummer.Sum64x4()
+	compare(t, "Unaligned write test 2, 12 bytes written failed", exp2, res2)
+
+	var sum []byte
+	sum = checksummer.Sum(sum)
+	expSum := []byte{8, 12, 16, 20, 0, 0, 0, 0, 15, 22, 29, 36, 0, 0, 0, 0, 23, 34, 45, 56, 0, 0, 0, 0, 32, 48, 64, 80, 0, 0, 0, 0}
+	if !bytes.Equal(sum, expSum) {
+		t.Errorf("Checksum Sum method call 1 returned wrong result.\nExpected %x,\ngot: %x)", sum, expSum)
+	}
+	// Test that checksummer.Sum appends correctly
+	sum = checksummer.Sum(sum)
+	expSum2 := append(expSum, expSum...)
+	if !bytes.Equal(sum, expSum2) {
+		t.Errorf("Checksum Sum method call 2 returned wrong result.\nExpected %x,\ngot: %x)", sum, expSum2)
+	}
+}
